@@ -1,0 +1,141 @@
+============================================================================================================
+= Prepare for install
+============================================================================================================
+# Locale fix
+vim /etc/default/locale
+-> LANG=en_US.UTF-8
+-> LC_ALL=en_US.UTF-8
+reboot now
+
+# Common install
+apt update
+apt upgrade
+apt install git python python-pip htop gcc
+
+# Make the Swap (dont need if you have 4 GB RAM or more)
+fallocate -l 4G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+swapon --show
+
+# Make the Swap File Permanent:
+cp /etc/fstab /etc/fstab.bak
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+
+============================================================================================================
+= Install dependencies: MySQL, VEP, VT, FASTA
+============================================================================================================
+# vt project (https://github.com/atks/vt)
+apt install zlib1g-dev libbz2-dev liblzma-dev
+git clone https://github.com/atks/vt.git
+cd vt 
+make
+make test
+
+# MySQL (http://help.ubuntu.ru/wiki/mysql)
+apt install mysql-server
+apt install libmysqlclient-dev
+
+# VEP project (http://www.ensembl.org/info/docs/tools/vep/script/vep_download.html)
+cpan App::cpanminus
+cpanm DBD::mysql
+cpanm Module::Build
+
+apt install unzip
+git clone https://github.com/Ensembl/ensembl-vep.git
+cd ensembl-vep
+perl INSTALL.pl
+# When the question (?) appears - select only one homo_sapiens! (171 173 175)
+# Manually downloading caches (http://www.ensembl.org/info/docs/tools/vep/script/vep_cache.html#cache)
+
+# FASTA project
+mkdir fasta
+cd fasta
+wget ftp://ftp.ncbi.nlm.nih.gov/1000genomes/ftp/technical/reference/human_g1k_v37.fasta.gz
+gzip -d human_g1k_v37.fasta.gz
+
+
+============================================================================================================
+= Install GEMINI
+============================================================================================================
+apt install tabix
+wget https://raw.github.com/arq5x/gemini/master/gemini/scripts/gemini_install.py
+python gemini_install.py /usr/local /usr/local/share/gemini
+export PATH=$PATH:/usr/local/gemini/bin
+# it would be wise to add the above line to your ``.bashrc`` or ``.bash_profile``
+
+# Updating annotations (http://gemini.readthedocs.io/en/latest/content/installation.html#updating-the-gemini-executables-and-annotations)
+# CADD score ~32 GB
+gemini update --dataonly --extra cadd_score
+# GERP score ~7 GB
+gemini update --dataonly --extra gerp_bp
+
+# Running unit tests
+git clone https://github.com/arq5x/gemini
+git checkout v0.20.1 # or the current version that you installed
+cd gemini
+bash master-test.sh
+
+
+============================================================================================================
+= Preprocessing and Loading a VCF file into GEMINI
+============================================================================================================
+# Step 1. split, left-align, and trim variants (http://gemini.readthedocs.io/en/latest/content/preprocessing.html#step-1-split-left-align-and-trim-variants)
+/root/vt/vt decompose -s 180214_HSGA.Panel.cito_1772.vcf | /root/vt/vt normalize -r /root/fasta/human_g1k_v37.fasta - > 180214_HSGA.Panel.cito_1772.norm.vcf
+
+# Step 2. Annotate with VEP (http://gemini.readthedocs.io/en/latest/content/functional_annotation.html#running-vep)
+/root/ensembl-vep/vep -i 180214_HSGA.Panel.cito_1772.norm.vcf \
+    --offline \
+    --fasta /root/fasta/human_g1k_v37.fasta \
+    --merge \
+    --cache \
+    --sift b \
+    --polyphen b \
+    --symbol \
+    --numbers \
+    --biotype \
+    --total_length \
+    -o 180214_HSGA.Panel.cito_1772.annot.vcf \
+    --vcf \
+    --fields Consequence,Codons,Amino_acids,Gene,SYMBOL,Feature,EXON,PolyPhen,SIFT,Protein_position,BIOTYPE
+
+ -- OR --
+
+/root/ensembl-vep/vep -i 180214_HSGA.Panel.cito_1772.norm.vcf \
+    --port 3337 \
+    --merge \
+    --cache \
+    --sift b \
+    --polyphen b \
+    --symbol \
+    --numbers \
+    --biotype \
+    --total_length \
+    -o 180214_HSGA.Panel.cito_1772.annot.vcf \
+    --vcf \
+    --fields Consequence,Codons,Amino_acids,Gene,SYMBOL,Feature,EXON,PolyPhen,SIFT,Protein_position,BIOTYPE
+
+
+============================================================================================================
+= Usage GEMINI
+============================================================================================================    
+# VEP-annotated VCF
+gemini load --cores 2 -v 180214_HSGA.Panel.cito_1772.annot.vcf -t VEP 180214_HSGA.Panel.cito_1772.db
+
+# Start Web server
+gemini browser --host 0.0.0.0 work/cito_1772/180214_HSGA.Panel.cito_1772.db
+
+
+============================================================================================================
+= GEMINI Queries
+============================================================================================================    
+gemini query --header -q "select * from variants" 180214_HSGA.Panel.cito_1772.db >> 180214_HSGA.Panel.cito_1772.tsv
+
+
+============================================================================================================
+= Optional
+============================================================================================================
+# TCP Track (https://askubuntu.com/questions/257263/how-to-display-network-traffic-in-the-terminal)
+apt install tcptrack
